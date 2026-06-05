@@ -12,16 +12,20 @@ PARQUET_PATH = Path(__file__).parent / "bronze_data.parquet"
 VOLUME_PATH = "/Volumes/workspace/default/staging/bronze_data.parquet"
 BRONZE_TABLE = "development.games_bronze.bronze_games"
 
+# ================================================================================
 
 class _ErrorMarkerFormatter(logging.Formatter):
     def format(self, record):
+        # Prepends ">>> ERROR <<<" to error-level log lines for easy grep in app.log
         msg = super().format(record)
         if record.levelno >= logging.ERROR:
             return f">>> ERROR <<< {msg}"
         return msg
 
+# ================================================================================
 
 def _setup_logging():
+    # Configures dual logging: DEBUG+ to app.log with error markers, INFO+ to stdout
     logger = logging.getLogger("storage")
     logger.setLevel(logging.DEBUG)
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
@@ -38,8 +42,11 @@ def _setup_logging():
     logger.addHandler(ch)
     return logger
 
+# ================================================================================
 
 def _run_sql(client, warehouse_id, statement, logger, poll_interval=3, max_polls=60):
+    # Submits a SQL statement to the Databricks SQL warehouse and polls until
+    # it completes, times out, or fails
     resp = client.statement_execution.execute_statement(
         statement=statement,
         warehouse_id=warehouse_id,
@@ -55,16 +62,21 @@ def _run_sql(client, warehouse_id, statement, logger, poll_interval=3, max_polls
         logger.error(f"SQL failed — state: {resp.status.state}, error: {resp.status.error}")
     return resp
 
+# ================================================================================
 
 def upload_to_volume(client, logger):
+    # Uploads the local parquet file to the Unity Catalog Volume via the Files API
     size_mb = PARQUET_PATH.stat().st_size / 1_048_576
     logger.info(f"Uploading {PARQUET_PATH.name} ({size_mb:.1f} MB) to {VOLUME_PATH}")
     with open(PARQUET_PATH, "rb") as f:
         client.files.upload(VOLUME_PATH, f, overwrite=True)
     logger.info("Upload complete")
 
+# ================================================================================
 
 def create_bronze_table(client, warehouse_id, logger):
+    # Creates (or replaces) the bronze Delta table from the staged parquet,
+    # then runs a COUNT to confirm the expected number of rows landed
     logger.info(f"Creating Delta table: {BRONZE_TABLE}")
     resp = _run_sql(
         client,
@@ -82,8 +94,11 @@ def create_bronze_table(client, warehouse_id, logger):
         count = resp.result.data_array[0][0]
         logger.info(f"Row count verified: {count}")
 
+# ================================================================================
 
 def main():
+    # Entry point: loads .env, creates the WorkspaceClient, uploads the parquet,
+    # and creates the bronze Delta table
     load_dotenv()
     logger = _setup_logging()
 

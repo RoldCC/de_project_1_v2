@@ -36,14 +36,18 @@ _ACTIVE_STATES = {
     RunLifeCycleState.WAITING_FOR_RETRY,
 }
 
+# ================================================================================
 
 class _ErrorMarkerFormatter(logging.Formatter):
     def format(self, record):
+        # Prepends ">>> ERROR <<<" to error-level log lines for easy grep in app.log
         msg = super().format(record)
         return f">>> ERROR <<< {msg}" if record.levelno >= logging.ERROR else msg
 
+# ================================================================================
 
 def _setup_logging():
+    # Configures dual logging: DEBUG+ to app.log with error markers, INFO+ to stdout
     logger = logging.getLogger("pipeline")
     logger.setLevel(logging.DEBUG)
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
@@ -60,10 +64,13 @@ def _setup_logging():
     logger.addHandler(ch)
     return logger
 
-
 # ── shared utilities ──────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def _upload_notebook(client, notebook_key, logger):
+    # Base64-encodes a local .py file and imports it to the Databricks workspace,
+    # overwriting any existing notebook at the same remote path
     meta = _NOTEBOOKS[notebook_key]
     local_path  = meta["local"]
     remote_path = meta["remote"]
@@ -80,8 +87,11 @@ def _upload_notebook(client, notebook_key, logger):
     )
     logger.info(f"Uploaded {local_path.name} → {remote_path}")
 
+# ================================================================================
 
 def _submit_and_wait(client, notebook_key, logger, poll_interval=15):
+    # Submits the notebook as a one-time Databricks job run and polls every
+    # poll_interval seconds until it succeeds or fails
     remote_path = _NOTEBOOKS[notebook_key]["remote"]
 
     run = client.jobs.submit(
@@ -114,10 +124,12 @@ def _submit_and_wait(client, notebook_key, logger, poll_interval=15):
     )
     return False
 
-
 # ── pipeline steps ────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def step_ingestion(logger):
+    # Step 1: calls the RAWG API across all pages and saves the result to bronze_data.parquet
     logger.info("=== STEP 1: Data Ingestion (RAWG API → parquet) ===")
     from ingestion.data_ingestion import fetch_all, save_parquet
 
@@ -134,8 +146,10 @@ def step_ingestion(logger):
     save_parquet(records, PARQUET_PATH, logger)
     return True
 
+# ================================================================================
 
 def step_upload_and_bronze(client, warehouse_id, logger):
+    # Step 2: uploads the local parquet to a UC Volume and creates the bronze Delta table
     logger.info("=== STEP 2: Upload + Bronze Delta Table (parquet → Databricks) ===")
     from ingestion.data_to_db import upload_to_volume, create_bronze_table
 
@@ -147,22 +161,29 @@ def step_upload_and_bronze(client, warehouse_id, logger):
     create_bronze_table(client, warehouse_id, logger)
     return True
 
+# ================================================================================
 
 def step_bronze_to_silver(client, logger):
+    # Step 3: uploads the bronze_to_silver notebook to Databricks and runs it as a job
     logger.info("=== STEP 3: Bronze → Silver (Databricks notebook) ===")
     _upload_notebook(client, "bronze_to_silver", logger)
     return _submit_and_wait(client, "bronze_to_silver", logger)
 
+# ================================================================================
 
 def step_silver_to_gold(client, logger):
+    # Step 4: uploads the silver_to_gold notebook to Databricks and runs it as a job
     logger.info("=== STEP 4: Silver → Gold (Databricks notebook) ===")
     _upload_notebook(client, "silver_to_gold", logger)
     return _submit_and_wait(client, "silver_to_gold", logger)
 
-
 # ── main ──────────────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def main():
+    # Entry point: loads .env, initializes the Databricks client, and runs all 4
+    # pipeline steps in sequence; exits non-zero immediately if any step fails
     load_dotenv()
     logger = _setup_logging()
 

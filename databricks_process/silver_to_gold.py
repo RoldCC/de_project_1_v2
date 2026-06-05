@@ -10,11 +10,14 @@ _NULL_STRINGS = ("", "nan", "none", "null", "na", "n/a")
 
 class _ErrorMarker(logging.Formatter):
     def format(self, record):
+        # Prepends ">>> ERROR <<<" to error-level log lines for easy grep in app.log
         msg = super().format(record)
         return f">>> ERROR <<< {msg}" if record.levelno >= logging.ERROR else msg
 
+# ================================================================================
 
 def _setup_logging():
+    # Configures a stdout logger (Databricks captures stdout as notebook output)
     logger = logging.getLogger("silver_to_gold")
     logger.setLevel(logging.DEBUG)
     h = logging.StreamHandler(sys.stdout)
@@ -22,16 +25,22 @@ def _setup_logging():
     logger.addHandler(h)
     return logger
 
+# ================================================================================
 
 def _get_spark():
+    # Returns the pre-existing Spark session injected by Databricks; falls back to
+    # creating one locally for testing outside a notebook
     try:
         return spark  # noqa: F821 — pre-initialized in Databricks notebook context
     except NameError:
         from pyspark.sql import SparkSession
         return SparkSession.builder.appName("silver_to_gold").getOrCreate()
 
+# ================================================================================
 
 def _standardize_nulls(df):
+    # Replaces common null-like strings ("", "nan", "none", etc.) with actual NULL
+    # in every string column so downstream aggregations aren't skewed by them
     string_cols = [f.name for f in df.schema.fields if isinstance(f.dataType, StringType)]
     for c in string_cols:
         df = df.withColumn(
@@ -40,8 +49,10 @@ def _standardize_nulls(df):
         )
     return df
 
+# ================================================================================
 
 def _write(df, table, logger):
+    # Creates or replaces a gold Delta table in Unity Catalog from the given DataFrame
     view = f"_tmp_{table}"
     df.createOrReplaceTempView(view)
     df.sparkSession.sql(
@@ -49,16 +60,13 @@ def _write(df, table, logger):
     )
     logger.info(f"  {table}: written")
 
-
 # ── table builders ────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def build_gold_fact_games(spark):
-    """
-    Central fact table. One row per game.
-    Denormalizations vs silver:
-      - esrb_name joined in so dashboards don't need a separate JOIN
-      - release_year / release_month extracted for time-series analysis
-    """
+    # Central fact table (one row per game): joins in esrb_name from the ESRB dim
+    # and adds release_year / release_month computed columns for time-series analysis
     fact = spark.table("development.games_silver.silver_fact_games")
     esrb = spark.table("development.games_silver.silver_dim_esrb_ratings")
 
@@ -74,49 +82,50 @@ def build_gold_fact_games(spark):
         .withColumn("release_month", F.month("released"))
     )
 
+# ================================================================================
 
 def build_gold_bridge_game_genres(spark):
-    """
-    game_id + genre_id + genre_name.
-    Name denormalized so a WHERE genre_name = '...' needs no extra JOIN.
-    """
+    # Joins the silver genre bridge with the genre dim to denormalize genre_name,
+    # so dashboard SQL can filter by name without an extra JOIN
     bridge = spark.table("development.games_silver.silver_bridge_game_genres")
     dim    = spark.table("development.games_silver.silver_dim_genres")
     return bridge.join(dim, "genre_id", "left")
 
+# ================================================================================
 
 def build_gold_bridge_game_platforms(spark):
+    # Joins the silver platform bridge with the platform dim to denormalize platform_name
     bridge = spark.table("development.games_silver.silver_bridge_game_platforms")
     dim    = spark.table("development.games_silver.silver_dim_platforms")
     return bridge.join(dim, "platform_id", "left")
 
+# ================================================================================
 
 def build_gold_bridge_game_parent_platforms(spark):
+    # Joins the silver parent platform bridge with the dim to denormalize parent_platform_name
     bridge = spark.table("development.games_silver.silver_bridge_game_parent_platforms")
     dim    = spark.table("development.games_silver.silver_dim_parent_platforms")
     return bridge.join(dim, "parent_platform_id", "left")
 
+# ================================================================================
 
 def build_gold_bridge_game_stores(spark):
+    # Joins the silver store bridge with the store dim to denormalize store_name
     bridge = spark.table("development.games_silver.silver_bridge_game_stores")
     dim    = spark.table("development.games_silver.silver_dim_stores")
     return bridge.join(dim, "store_id", "left")
 
+# ================================================================================
 
 def build_gold_bridge_game_ratings(spark):
-    """
-    Rating breakdown per game (excellent / recommended / meh / skip).
-    Passes through from silver — no structural change needed.
-    """
+    # Passes through the silver ratings bridge unchanged (title, count, percent already clean)
     return spark.table("development.games_silver.silver_bridge_game_ratings")
 
+# ================================================================================
 
 def build_gold_agg_top_tags(spark):
-    """
-    Top 100 English tags by game count.
-    Pre-aggregated because the raw bridge has millions of rows (28k games × many tags).
-    English-only keeps tag names meaningful for display.
-    """
+    # Joins tag bridge + tag dim (English tags only), aggregates game count per tag,
+    # and returns the top 100; pre-aggregated because the raw bridge has millions of rows
     bridge = spark.table("development.games_silver.silver_bridge_game_tags")
     dim    = spark.table("development.games_silver.silver_dim_tags")
 
@@ -130,10 +139,13 @@ def build_gold_agg_top_tags(spark):
         .limit(100)
     )
 
-
 # ── main ──────────────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def main():
+    # Builds and writes all 7 gold tables; standardizes nulls on each DataFrame
+    # before writing so the gold layer is clean for dashboard queries
     logger = _setup_logging()
     spark  = _get_spark()
 

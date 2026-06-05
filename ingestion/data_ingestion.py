@@ -22,16 +22,20 @@ NESTED_FIELDS = [
     "genres", "stores", "tags", "esrb_rating", "short_screenshots", "clip",
 ]
 
+# ================================================================================
 
 class _ErrorMarkerFormatter(logging.Formatter):
     def format(self, record):
+        # Prepends ">>> ERROR <<<" to error-level log lines for easy grep in app.log
         msg = super().format(record)
         if record.levelno >= logging.ERROR:
             return f">>> ERROR <<< {msg}"
         return msg
 
+# ================================================================================
 
 def _setup_logging():
+    # Configures dual logging: DEBUG+ to app.log with error markers, INFO+ to stdout
     logger = logging.getLogger("ingestion")
     logger.setLevel(logging.DEBUG)
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
@@ -48,8 +52,11 @@ def _setup_logging():
     logger.addHandler(ch)
     return logger
 
+# ================================================================================
 
 def _fetch_page(session, api_key, page, logger):
+    # Fetches one page of game records from the RAWG API; retries up to MAX_RETRIES
+    # times with exponential backoff on rate-limit (429) or server (5xx) errors
     params = {"key": api_key, "page": page, "page_size": PAGE_SIZE}
     for attempt in range(MAX_RETRIES):
         try:
@@ -74,16 +81,21 @@ def _fetch_page(session, api_key, page, logger):
     logger.error(f"Page {page}: exhausted {MAX_RETRIES} retries, skipping")
     return []
 
+# ================================================================================
 
 def _serialize_nested(records):
+    # Converts nested list/dict fields to JSON strings for flat Parquet column storage
     for record in records:
         for field in NESTED_FIELDS:
             val = record.get(field)
             record[field] = json.dumps(val) if val is not None else None
     return records
 
+# ================================================================================
 
 def fetch_all(api_key, logger):
+    # Iterates all TOTAL_PAGES pages, serializing and collecting every game record;
+    # throttled at REQUEST_INTERVAL seconds per page to stay under RAWG's rate limit
     records = []
     session = requests.Session()
     for page in range(1, TOTAL_PAGES + 1):
@@ -94,14 +106,18 @@ def fetch_all(api_key, logger):
         time.sleep(REQUEST_INTERVAL)
     return records
 
+# ================================================================================
 
 def save_parquet(records, path, logger):
+    # Converts the records list to an Arrow Table and writes it as a Parquet file
     table = pa.Table.from_pylist(records)
     pq.write_table(table, path)
     logger.info(f"Wrote {len(records)} records to {path}")
 
+# ================================================================================
 
 def main():
+    # Entry point: loads .env, fetches all RAWG data, and saves to bronze_data.parquet
     load_dotenv()
     logger = _setup_logging()
 

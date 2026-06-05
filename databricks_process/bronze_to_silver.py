@@ -67,11 +67,14 @@ _NULL_STRINGS = ("", "nan", "none", "null", "na", "n/a")
 
 class _ErrorMarker(logging.Formatter):
     def format(self, record):
+        # Prepends ">>> ERROR <<<" to error-level log lines for easy grep in app.log
         msg = super().format(record)
         return f">>> ERROR <<< {msg}" if record.levelno >= logging.ERROR else msg
 
+# ================================================================================
 
 def _setup_logging():
+    # Configures a stdout logger (Databricks captures stdout as notebook output)
     logger = logging.getLogger("bronze_to_silver")
     logger.setLevel(logging.DEBUG)
     h = logging.StreamHandler(sys.stdout)
@@ -79,16 +82,22 @@ def _setup_logging():
     logger.addHandler(h)
     return logger
 
+# ================================================================================
 
 def _get_spark():
+    # Returns the pre-existing Spark session injected by Databricks; falls back to
+    # creating one locally for testing outside a notebook
     try:
         return spark  # noqa: F821 — pre-initialized in Databricks notebook context
     except NameError:
         from pyspark.sql import SparkSession
         return SparkSession.builder.appName("bronze_to_silver").getOrCreate()
 
+# ================================================================================
 
 def _standardize_nulls(df):
+    # Replaces common null-like strings ("", "nan", "none", etc.) with actual NULL
+    # in every string column so downstream aggregations aren't skewed by them
     string_cols = [f.name for f in df.schema.fields if isinstance(f.dataType, StringType)]
     for c in string_cols:
         df = df.withColumn(
@@ -97,8 +106,10 @@ def _standardize_nulls(df):
         )
     return df
 
+# ================================================================================
 
 def _parse_json(df):
+    # Parses all JSON string columns into typed structs/arrays using pre-defined schemas
     return (
         df
         .withColumn("_genres",           F.from_json("genres",           _GENRES_SCHEMA))
@@ -111,8 +122,10 @@ def _parse_json(df):
         .withColumn("_esrb",              F.from_json("esrb_rating",      _ESRB_SCHEMA))
     )
 
+# ================================================================================
 
 def _write(df, table, logger):
+    # Creates or replaces a silver Delta table in Unity Catalog from the given DataFrame
     view = f"_tmp_{table}"
     df.createOrReplaceTempView(view)
     df.sparkSession.sql(
@@ -122,7 +135,11 @@ def _write(df, table, logger):
 
 # ── table builders ────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def build_fact_games(df):
+    # Selects core game attributes and flattens added_by_status into columns;
+    # ESRB name is denormalized at the gold layer, so only the id is kept here
     return df.select(
         F.col("id").alias("game_id"),
         F.col("name").alias("game_name"),
@@ -143,16 +160,20 @@ def build_fact_games(df):
         F.col("_esrb.id").alias("esrb_rating_id"),
     )
 
+# ================================================================================
 
 def build_dim_esrb_ratings(df):
+    # Extracts a deduplicated ESRB rating dimension (id + name) from the parsed esrb column
     return (
         df.select(F.col("_esrb.id").alias("esrb_id"), F.col("_esrb.name").alias("esrb_name"))
         .filter(F.col("esrb_id").isNotNull())
         .distinct()
     )
 
+# ================================================================================
 
 def build_dim_genres(df):
+    # Explodes the genres array to produce a deduplicated genre dimension (id + name)
     return (
         df.select(F.explode("_genres").alias("g"))
         .select(F.col("g.id").alias("genre_id"), F.col("g.name").alias("genre_name"))
@@ -160,16 +181,20 @@ def build_dim_genres(df):
         .distinct()
     )
 
+# ================================================================================
 
 def build_bridge_game_genres(df):
+    # Explodes the genres array to produce the game↔genre bridge table (game_id + genre_id)
     return (
         df.select("id", F.explode("_genres").alias("g"))
         .select(F.col("id").alias("game_id"), F.col("g.id").alias("genre_id"))
         .filter(F.col("genre_id").isNotNull())
     )
 
+# ================================================================================
 
 def build_dim_platforms(df):
+    # Explodes the platforms array to produce a deduplicated platform dimension (id + name)
     return (
         df.select(F.explode("_platforms").alias("p"))
         .select(F.col("p.platform.id").alias("platform_id"), F.col("p.platform.name").alias("platform_name"))
@@ -177,16 +202,20 @@ def build_dim_platforms(df):
         .distinct()
     )
 
+# ================================================================================
 
 def build_bridge_game_platforms(df):
+    # Explodes the platforms array to produce the game↔platform bridge table (game_id + platform_id)
     return (
         df.select("id", F.explode("_platforms").alias("p"))
         .select(F.col("id").alias("game_id"), F.col("p.platform.id").alias("platform_id"))
         .filter(F.col("platform_id").isNotNull())
     )
 
+# ================================================================================
 
 def build_dim_parent_platforms(df):
+    # Explodes the parent_platforms array to produce a deduplicated parent platform dimension
     return (
         df.select(F.explode("_parent_platforms").alias("pp"))
         .select(F.col("pp.platform.id").alias("parent_platform_id"), F.col("pp.platform.name").alias("parent_platform_name"))
@@ -194,16 +223,20 @@ def build_dim_parent_platforms(df):
         .distinct()
     )
 
+# ================================================================================
 
 def build_bridge_game_parent_platforms(df):
+    # Explodes the parent_platforms array to produce the game↔parent_platform bridge table
     return (
         df.select("id", F.explode("_parent_platforms").alias("pp"))
         .select(F.col("id").alias("game_id"), F.col("pp.platform.id").alias("parent_platform_id"))
         .filter(F.col("parent_platform_id").isNotNull())
     )
 
+# ================================================================================
 
 def build_dim_stores(df):
+    # Explodes the stores array to produce a deduplicated store dimension (id + name)
     return (
         df.select(F.explode("_stores").alias("s"))
         .select(F.col("s.store.id").alias("store_id"), F.col("s.store.name").alias("store_name"))
@@ -211,16 +244,20 @@ def build_dim_stores(df):
         .distinct()
     )
 
+# ================================================================================
 
 def build_bridge_game_stores(df):
+    # Explodes the stores array to produce the game↔store bridge table (game_id + store_id)
     return (
         df.select("id", F.explode("_stores").alias("s"))
         .select(F.col("id").alias("game_id"), F.col("s.store.id").alias("store_id"))
         .filter(F.col("store_id").isNotNull())
     )
 
+# ================================================================================
 
 def build_dim_tags(df):
+    # Explodes the tags array to produce a deduplicated tag dimension (id + name + language)
     return (
         df.select(F.explode("_tags").alias("t"))
         .select(
@@ -232,16 +269,21 @@ def build_dim_tags(df):
         .distinct()
     )
 
+# ================================================================================
 
 def build_bridge_game_tags(df):
+    # Explodes the tags array to produce the game↔tag bridge table (game_id + tag_id)
     return (
         df.select("id", F.explode("_tags").alias("t"))
         .select(F.col("id").alias("game_id"), F.col("t.id").alias("tag_id"))
         .filter(F.col("tag_id").isNotNull())
     )
 
+# ================================================================================
 
 def build_bridge_game_ratings(df):
+    # Explodes the ratings array to produce the game↔rating breakdown bridge table
+    # (game_id + rating_id + title + count + percent)
     return (
         df.select("id", F.explode("_ratings").alias("r"))
         .select(
@@ -254,10 +296,13 @@ def build_bridge_game_ratings(df):
         .filter(F.col("rating_id").isNotNull())
     )
 
-
 # ── main ──────────────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def main():
+    # Reads the bronze table, deduplicates by game id, parses all JSON columns,
+    # then builds and writes all 13 silver tables
     logger = _setup_logging()
     spark = _get_spark()
 

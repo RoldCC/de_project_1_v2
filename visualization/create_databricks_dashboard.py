@@ -16,10 +16,14 @@ PARENT_PATH    = "/de_project_1_v2"
 
 class _ErrorMarkerFormatter(logging.Formatter):
     def format(self, record):
+        # Prepends ">>> ERROR <<<" to error-level log lines for easy grep in app.log
         msg = super().format(record)
         return f">>> ERROR <<< {msg}" if record.levelno >= logging.ERROR else msg
 
+# ================================================================================
+
 def _setup_logging():
+    # Configures dual logging: DEBUG+ to app.log with error markers, INFO+ to stdout
     logger = logging.getLogger("create_dashboard")
     logger.setLevel(logging.DEBUG)
     fmt = "%(asctime)s [%(levelname)s] %(message)s"
@@ -59,11 +63,18 @@ _PARAM_TARGETS = {
 
 # ── dataset helpers ───────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def _to_lines(sql: str) -> list:
+    # Splits a SQL string on newlines to produce the queryLines list format
+    # required by the Lakeview API (single "query" string does not bind parameters)
     return [line + "\n" for line in sql.split("\n")]
 
+# ================================================================================
+
 def _str_param(keyword: str) -> dict:
-    """STRING parameter with empty-string default (= 'show all' on initial load)."""
+    # Builds a STRING dataset parameter with an empty-string default
+    # (empty string = no filter applied on initial dashboard load)
     return {
         "displayName": keyword,
         "keyword": keyword,
@@ -73,8 +84,11 @@ def _str_param(keyword: str) -> dict:
         },
     }
 
+# ================================================================================
+
 def _date_param(keyword: str) -> dict:
-    """DATE parameter with null default (= no filter on initial load)."""
+    # Builds a DATE dataset parameter with a null default
+    # (null resolves the TRY_CAST IS NULL guard, showing all data on initial load)
     return {
         "displayName": keyword,
         "keyword": keyword,
@@ -84,7 +98,11 @@ def _date_param(keyword: str) -> dict:
         },
     }
 
+# ================================================================================
+
 def _dataset(name, display_name, sql, params=None):
+    # Assembles a Lakeview dataset dict with queryLines SQL and auto-typed parameters
+    # (DATE type for date params, STRING type for all others)
     d = {
         "name": name,
         "displayName": display_name,
@@ -99,25 +117,44 @@ def _dataset(name, display_name, sql, params=None):
 
 # ── SQL filter conditions ─────────────────────────────────────────────────────
 
+# ================================================================================
+
 def _genre_cond(p="param_genre"):
+    # SQL WHERE condition that filters by genre; passes all rows when the parameter
+    # is empty or NULL (checked via EXISTS on the genre bridge table)
     return (f"AND (:{p} IS NULL OR :{p} = '' OR EXISTS ("
             f"SELECT 1 FROM development.games_gold.gold_bridge_game_genres _g "
             f"WHERE _g.game_id = f.game_id AND _g.genre_name = :{p}))\n")
 
+# ================================================================================
+
 def _platform_cond(p="param_platform"):
+    # SQL WHERE condition that filters by parent platform; passes all rows when the
+    # parameter is empty or NULL (checked via EXISTS on the parent platform bridge table)
     return (f"AND (:{p} IS NULL OR :{p} = '' OR EXISTS ("
             f"SELECT 1 FROM development.games_gold.gold_bridge_game_parent_platforms _pp "
             f"WHERE _pp.game_id = f.game_id AND _pp.parent_platform_name = :{p}))\n")
 
+# ================================================================================
+
 def _esrb_cond(f_alias="f", p="param_esrb"):
+    # SQL WHERE condition that filters by ESRB rating (with 'Not Rated' coalesce);
+    # passes all rows when the parameter is empty or NULL
     return (f"AND (:{p} IS NULL OR :{p} = '' OR "
             f"COALESCE({f_alias}.esrb_name, 'Not Rated') = :{p})\n")
 
+# ================================================================================
+
 def _date_from_cond(f_alias="f", p="param_date_from"):
-    # TRY_CAST returns NULL for empty string/NULL — avoids CAST_INVALID_INPUT at planning time
+    # SQL WHERE condition for the lower date bound; TRY_CAST returns NULL for empty/null
+    # params, avoiding CAST_INVALID_INPUT errors at query planning time
     return f"AND (TRY_CAST(:{p} AS DATE) IS NULL OR {f_alias}.released >= TRY_CAST(:{p} AS DATE))\n"
 
+# ================================================================================
+
 def _date_to_cond(f_alias="f", p="param_date_to"):
+    # SQL WHERE condition for the upper date bound; TRY_CAST returns NULL for empty/null
+    # params, avoiding CAST_INVALID_INPUT errors at query planning time
     return f"AND (TRY_CAST(:{p} AS DATE) IS NULL OR {f_alias}.released <= TRY_CAST(:{p} AS DATE))\n"
 
 # ── SQL datasets ──────────────────────────────────────────────────────────────
@@ -284,10 +321,17 @@ _DATASETS = [
 
 # ── widget helpers ────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def _f(name):
+    # Builds a field reference dict for a Lakeview chart encoding
     return {"name": name, "expression": f"`{name}`"}
 
+# ================================================================================
+
 def _q(dataset, fields):
+    # Builds a named query dict linking a dataset to a list of fields;
+    # used inside widget definitions to declare which columns the chart reads
     return {
         "name": "main_query",
         "query": {
@@ -297,15 +341,25 @@ def _q(dataset, fields):
         },
     }
 
+# ================================================================================
+
 def _pos(x, y, w, h):
+    # Builds a grid position dict for a Lakeview widget (6-column grid: x + w must not exceed 6)
     return {"x": x, "y": y, "width": w, "height": h}
 
+# ================================================================================
+
 def _frame(title):
+    # Builds the frame spec that controls the widget's title visibility
     return {"showDescription": False, "showTitle": True, "title": title}
 
 # ── date picker filter widget ─────────────────────────────────────────────────
 
+# ================================================================================
+
 def _date_picker_filter(name, title, param_name, x, y, w=3, h=3):
+    # Builds a filter-date-picker widget wired to every dataset that accepts
+    # the given date parameter, so selecting a date updates all charts at once
     queries = []
     enc_fields = []
     for ds in _PARAM_TARGETS[param_name]:
@@ -335,7 +389,11 @@ def _date_picker_filter(name, title, param_name, x, y, w=3, h=3):
 
 # ── filter widget (single-select) ─────────────────────────────────────────────
 
+# ================================================================================
+
 def _filter(name, title, opt_dataset, opt_field, param_name, target_datasets, x, y, w=2, h=3):
+    # Builds a single-select dropdown filter: reads options from one dataset and
+    # writes the selected value as a parameter to all target datasets
     opt_qname = f"{name}_opts"
     queries = [{
         "name": opt_qname,
@@ -375,7 +433,10 @@ def _filter(name, title, opt_dataset, opt_field, param_name, target_datasets, x,
 
 # ── chart widgets ─────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def _counter(name, title, dataset, field, x, y, w=3, h=4):
+    # Builds a KPI counter widget displaying a single aggregated metric value
     return {
         "widget": {
             "name": name,
@@ -389,8 +450,12 @@ def _counter(name, title, dataset, field, x, y, w=3, h=4):
         "position": _pos(x, y, w, h),
     }
 
+# ================================================================================
+
 def _bar(name, title, dataset, cat_field, val_field, cat_label, val_label,
          x, y, w=3, h=8, horizontal=False, color_field=None, color_label=None):
+    # Builds a bar chart widget; supports horizontal layout and optional color
+    # encoding for grouped bars (color_field adds a legend-driven series split)
     fields = [cat_field, val_field]
     if color_field:
         fields.append(color_field)
@@ -424,7 +489,10 @@ def _bar(name, title, dataset, cat_field, val_field, cat_label, val_label,
         "position": _pos(x, y, w, h),
     }
 
+# ================================================================================
+
 def _line(name, title, dataset, x_field, y_field, x_label, y_label, x, y, w=6, h=8):
+    # Builds a line chart widget for time-series data
     return {
         "widget": {
             "name": name,
@@ -443,7 +511,10 @@ def _line(name, title, dataset, x_field, y_field, x_label, y_label, x, y, w=6, h
         "position": _pos(x, y, w, h),
     }
 
+# ================================================================================
+
 def _pie(name, title, dataset, label_field, val_field, x, y, w=3, h=8):
+    # Builds a pie chart widget for proportional distribution across categories
     return {
         "widget": {
             "name": name,
@@ -462,8 +533,11 @@ def _pie(name, title, dataset, label_field, val_field, x, y, w=3, h=8):
         "position": _pos(x, y, w, h),
     }
 
+# ================================================================================
+
 def _scatter(name, title, dataset, x_field, y_field, color_field,
              x_label, y_label, color_label, x, y, w=3, h=8):
+    # Builds a scatter chart widget with color-encoded categories for multi-variable analysis
     return {
         "widget": {
             "name": name,
@@ -485,7 +559,10 @@ def _scatter(name, title, dataset, x_field, y_field, color_field,
         "position": _pos(x, y, w, h),
     }
 
+# ================================================================================
+
 def _table_col(field_name, display_name, order, align="left"):
+    # Builds a column spec dict for a Lakeview table widget
     return {
         "alignContent": align, "allowHTML": False, "allowSearch": True,
         "booleanValues": ["false", "true"], "dateTimeFormat": "YYYY-MM-DD",
@@ -497,7 +574,10 @@ def _table_col(field_name, display_name, order, align="left"):
         "title": display_name, "type": "string", "useMonospaceFont": False, "visible": True,
     }
 
+# ================================================================================
+
 def _table(name, title, dataset, columns, x, y, w=6, h=10):
+    # Builds a paginated table widget with the given column definitions (sortable, 20 rows/page)
     fields = [c["fieldName"] for c in columns]
     return {
         "widget": {
@@ -517,7 +597,11 @@ def _table(name, title, dataset, columns, x, y, w=6, h=10):
 
 # ── dashboard spec ────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def _build_spec():
+    # Assembles the complete Lakeview dashboard JSON spec: all datasets,
+    # the filter/chart layout, and page metadata
     top_games_cols = [
         _table_col("game_name",     "Game",           10000, "left"),
         _table_col("released",      "Released",       10001, "center"),
@@ -608,7 +692,11 @@ def _build_spec():
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+# ================================================================================
+
 def main():
+    # Entry point: deletes any existing dashboard with the same name, then creates
+    # and publishes a new one from the built spec
     load_dotenv(Path(__file__).parent.parent / ".env")
     logger = _setup_logging()
 
