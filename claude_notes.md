@@ -1,0 +1,32 @@
+# Claude Notes
+
+## Task Log
+
+| Task | Timestamp beginning | Timestamp ending | Claude notes |
+|------|---------------------|------------------|--------------|
+| Databricks AI/BI Dashboard — creation & debugging | 2026-05-31 | 2026-06-03 | **Challenge 1:** `[UNBOUND_SQL_PARAMETER]` on all charts. Root cause: dataset SQL must use `queryLines` (list of strings) not `query` (single string); the API silently accepts both but only `queryLines` binds parameters correctly. **Solution:** Rewrote all datasets to use `_to_lines()` helper splitting SQL on `\n`. **Challenge 2:** `filter-date-range` widget type not supported — renders blank. **Solution:** Replaced with two `filter-date-picker` widgets side by side (confirmed widget type). **Challenge 3:** `CAST_INVALID_INPUT` on date filter SQL (`f.released >= :param_date_from`) — Databricks SQL validates the cast at planning time even when the OR guard short-circuits. **Solution:** Replaced with `TRY_CAST(:param AS DATE) IS NULL OR f.released >= TRY_CAST(:param AS DATE)`. **Challenge 4:** DATE parameters with no `defaultSelection` cause "Missing selections" error on dashboard load. **Solution:** Set `defaultSelection` with `{"value": null}` for DATE params — null resolves the `TRY_CAST IS NULL` guard so all data shows on initial load. **Challenge 5:** Layout overflow — Lakeview grid is 6 columns wide; placing widgets at `x=6+` compresses them into remaining pixels. **Solution:** Reverted to 6-wide grid; used `w=2,1,1,2` for 4 KPI cards (sums to 6, symmetrical). **Improvement:** Always validate grid coordinates by ensuring each row's `x + w` values sum to the grid max before publishing. |
+| run_pipeline.py — end-to-end orchestration | 2026-05-30 | 2026-05-30 | **Challenge:** No single entry point existed; steps had to be run manually in order with no failure guard. **Solution:** Created `run_pipeline.py` at project root. Imports `fetch_all`/`save_parquet` from `data_ingestion.py` and `upload_to_volume`/`create_bronze_table` from `data_to_db.py` directly (bypassing their `main()`), then triggers `bronze_to_silver` notebook via `client.jobs.submit()` + polling loop. Pipeline exits non-zero on any step failure. **Improvement:** `jobs.submit()` returns a `run_id` immediately; polling on `RunLifeCycleState` is the correct pattern — do not use `wait_for_run()` as it blocks the local process with no progress feedback. |
+| bronze_to_silver — Serverless write | 2026-05-30 | 2026-05-30 | **Challenge:** `saveAsTable` and `writeTo().createOrReplace()` both fail on Serverless with `PERSIST TABLE is not supported` because `workspace` catalog = Hive Metastore (legacy). Serverless only supports writes to Unity Catalog. **Solution:** Switched all tables to `development` catalog which has pre-existing `games_bronze`, `games_silver`, `games_gold` schemas — proper Unity Catalog. Updated `data_to_db.py` and `bronze_to_silver.py`. **Improvement:** Always target Unity Catalog (`development.*`) from the start — never use `workspace.*` for Serverless notebook workloads. |
+| Project setup + ingestion | 2026-05-29 22:30 | 2026-05-29 22:51 | **Challenge:** First Databricks PAT (`dapi358...`) lacked `files` and `sql` scopes — all API calls denied despite valid auth. **Solution:** User regenerated token; DBFS still blocked because workspace has "Public DBFS root disabled" (Unity Catalog workspace default). Switched upload to Files API targeting a UC Volume (`/Volumes/workspace/default/staging/`). **Improvement:** Always probe both DBFS and SQL execution as a connectivity check before writing file upload code — the failure mode differs (scope error vs. workspace policy) and dictates the fix. |
+
+---
+
+## System Improvement Points
+
+### Architecture observations (based on CLAUDE.md + CONTEXT.md)
+
+1. **ingestion/ dual responsibility**: `data_ingestion.py` and `data_to_db.py` live in the same folder. Ingestion pulls from RAWG and writes parquet; data_to_db then pushes that parquet to Databricks. This is correct, but the folder name (`ingestion`) only communicates the first responsibility — consider whether `data_to_db.py` belongs in a dedicated `storage/` or `loading/` folder as the CLAUDE.md directory structure originally implied.
+
+2. **700 pages × 40 rows = 28,000 records** — RAWG's free API rate-limits at 20 req/s. The retry/backoff logic in `data_ingestion.py` is critical. A poorly tuned backoff will either time out or hammer the API. Recommend exponential backoff with jitter and a per-page delay of ~0.1s in the happy path.
+
+3. **Parquet as intermediate format**: Good choice for schema preservation before Databricks upload. Nested fields (lists/dicts) will need serialization to JSON strings at write time and exploding at the bronze→silver step — the CONTEXT.md already calls this out.
+
+4. **DBFS disabled (confirmed)**: This is a Unity Catalog workspace with the public DBFS root disabled. All file staging must go through Unity Catalog Volumes (`/Volumes/catalog/schema/volume/`). The staging volume used is `workspace.default.staging`. Any future file uploads must use `client.files.upload()`, not `client.dbfs.upload()`.
+
+5. **Catalog split — workspace vs development**: `workspace` catalog = Hive Metastore (legacy). `development` catalog = Unity Catalog with schemas `games_bronze`, `games_silver`, `games_gold`. All Delta tables must live in `development.*`. Serverless notebooks cannot write to Hive Metastore — `PERSIST TABLE` error is thrown regardless of write API used.
+
+5. **Databricks SQL Warehouse, not a cluster**: The connection is via SQL Warehouse (`a29da8ba6c3b5539`), not a compute cluster. This means `bronze_to_silver.py` and `silver_to_gold.py` will need to run as Databricks notebooks or jobs (not locally via databricks-connect), since PySpark processing happens inside Databricks, not from the local machine.
+
+6. **Orchestration via `run_pipeline.py`**: A single entry point (`python run_pipeline.py`) sequences all steps — RAWG ingestion → parquet upload → bronze Delta table → silver tables (via Databricks Jobs API `jobs.submit()`). Stops immediately if any step fails, so downstream steps never run on stale or missing data. No external DAG tool needed at this scope.
+
+7. **evidence.dev + GitHub Actions**: The visualization CONTEXT.md mentions running the dashboard on GitHub without a local machine. This requires a GitHub Actions workflow that builds the Evidence.dev app and deploys it (e.g., GitHub Pages). Credentials (Databricks token) will need to be stored as GitHub secrets.
