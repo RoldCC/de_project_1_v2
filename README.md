@@ -1,6 +1,6 @@
 # Games Analytics Pipeline
 
-End-to-end data engineering project that extracts video game data from the [RAWG API](https://rawg.io/apidocs), processes it through a medallion architecture on Databricks Community Edition, and surfaces insights through an interactive AI/BI dashboard.
+End-to-end data engineering project that extracts video game data from the [RAWG API](https://rawg.io/apidocs), processes it through a medallion architecture on Databricks Free Edition, and surfaces insights through an interactive AI/BI dashboard.
 
 ## Architecture
 
@@ -76,7 +76,7 @@ de_project_1_v2/
 ### Prerequisites
 
 - Python 3.10+
-- Databricks Community Edition workspace with Unity Catalog enabled
+- Databricks Free Edition workspace with Unity Catalog enabled
 - RAWG API key (free at [rawg.io](https://rawg.io/apidocs))
 
 ### Install dependencies
